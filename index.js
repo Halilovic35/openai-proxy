@@ -25,6 +25,52 @@ app.use((req, res, next) => {
   next();
 });
 
+// Test endpoint za provjeru OpenAI API konekcije
+app.post('/openai/v1/test', async (req, res) => {
+  const payload = {
+    model: "gpt-3.5-turbo",
+    messages: [
+      {
+        role: "user",
+        content: "Hello"
+      }
+    ]
+  };
+
+  try {
+    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const openaiResponseJson = await openaiResponse.json();
+    
+    // Log kompletan OpenAI odgovor
+    console.log('OpenAI Response:', JSON.stringify(openaiResponseJson, null, 2));
+
+    // Provjeri da li postoji choices polje i nije prazno
+    if (!openaiResponseJson.choices || openaiResponseJson.choices.length === 0) {
+      return res.status(500).json({
+        error: "Invalid response from OpenAI."
+      });
+    }
+
+    // Vrati kompletan odgovor ako je sve ok
+    return res.status(200).json(openaiResponseJson);
+
+  } catch (error) {
+    console.error('OpenAI Test Error:', error);
+    return res.status(500).json({
+      error: "Invalid response from OpenAI."
+    });
+  }
+});
+
+// Glavni OpenAI proxy middleware
 app.use('/openai/v1', async (req, res) => {
   // Validacija ulaznog requesta
   if (!req.body || !Array.isArray(req.body.messages)) {
