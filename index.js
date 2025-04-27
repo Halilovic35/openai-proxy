@@ -2,127 +2,75 @@ import express from 'express';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import { v4 as uuidv4 } from 'uuid';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const OPENAI_BASE_URL = 'https://api.openai.com/v1';
+
+// Simple logging function
+const log = (requestId, type, message, data = null) => {
+  console.log(`[${new Date().toISOString()}] [${requestId}] [${type}] ${message}`, data || '');
+};
 
 app.use(cors());
 app.use(express.json());
 
-// Logging middleware
-app.use((req, res, next) => {
-  console.log('--- Incoming Request ---');
-  console.log('Method:', req.method);
-  console.log('Path:', req.originalUrl);
-  console.log('Headers:', JSON.stringify(req.headers, null, 2));
-  if (req.body && Object.keys(req.body).length > 0) {
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-  } else {
-    console.log('Body: <empty>');
-  }
-  next();
-});
+// Proxy endpoint for all OpenAI requests
+app.post('/openai/v1/*', async (req, res) => {
+  const requestId = uuidv4();
+  const targetPath = req.params[0];
+  const openaiUrl = `${OPENAI_BASE_URL}/${targetPath}`;
 
-// Test endpoint za provjeru OpenAI API konekcije
-app.post('/openai/v1/test', async (req, res) => {
-  const payload = {
-    model: "gpt-3.5-turbo",
-    messages: [
-      {
-        role: "user",
-        content: "Hello"
-      }
-    ]
-  };
+  log(requestId, 'REQUEST', `Forwarding to OpenAI: ${openaiUrl}`, {
+    method: 'POST',
+    path: targetPath,
+    body: req.body
+  });
 
   try {
-    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+    const openaiResponse = await fetch(openaiUrl, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-
-    const openaiResponseJson = await openaiResponse.json();
-    
-    // Log kompletan OpenAI odgovor
-    console.log('OpenAI Response:', JSON.stringify(openaiResponseJson, null, 2));
-
-    // Provjeri da li postoji choices polje i nije prazno
-    if (!openaiResponseJson.choices || openaiResponseJson.choices.length === 0) {
-      return res.status(500).json({
-        error: "Invalid response from OpenAI."
-      });
-    }
-
-    // Vrati kompletan odgovor ako je sve ok
-    return res.status(200).json(openaiResponseJson);
-
-  } catch (error) {
-    console.error('OpenAI Test Error:', error);
-    return res.status(500).json({
-      error: "Invalid response from OpenAI."
-    });
-  }
-});
-
-// Glavni OpenAI proxy middleware
-app.use('/openai/v1', async (req, res) => {
-  // Validacija ulaznog requesta
-  if (!req.body || !Array.isArray(req.body.messages)) {
-    console.error('Invalid request: messages array is required.');
-    return res.status(400).json({ error: 'Invalid request: messages array is required.' });
-  }
-
-  const openaiPath = req.originalUrl.replace('/openai/v1', '/v1');
-
-  try {
-    const openaiResponse = await fetch(`https://api.openai.com${openaiPath}`, {
-      method: req.method,
       headers: {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: req.method !== 'GET' ? JSON.stringify(req.body) : undefined,
+      body: JSON.stringify(req.body),
     });
 
-    // Logovanje odgovora od OpenAI
-    console.log('--- OpenAI Response ---');
-    console.log('Status:', openaiResponse.status);
-    console.log('Headers:', JSON.stringify(Object.fromEntries(openaiResponse.headers.entries()), null, 2));
-    const dataText = await openaiResponse.text();
-    let data;
-    try {
-      data = JSON.parse(dataText);
-      console.log('Body:', JSON.stringify(data, null, 2));
-    } catch (e) {
-      data = dataText;
-      console.log('Body (raw):', dataText);
-    }
+    const data = await openaiResponse.json();
 
-    // Validacija odgovora
-    if (!data || !data.choices || !Array.isArray(data.choices) || data.choices.length === 0) {
-      console.error('Invalid response from OpenAI: choices array is missing or empty.');
-      return res.status(500).json({ error: 'Invalid response from OpenAI.' });
-    }
+    log(requestId, 'RESPONSE', `OpenAI response status: ${openaiResponse.status}`, {
+      status: openaiResponse.status,
+      response: data
+    });
 
-    res.status(openaiResponse.status).send(dataText);
+    // Forward the exact response from OpenAI to the client
+    res.status(openaiResponse.status).json(data);
   } catch (error) {
-    // Detaljno logovanje greške
-    console.error('--- Proxy Error ---');
-    console.error('Status:', error.status || 500);
-    console.error('Message:', error.message);
-    if (error.code) console.error('Code:', error.code);
-    if (error.type) console.error('Type:', error.type);
-    if (error.stack) console.error('Stack:', error.stack);
-    res.status(500).json({ error: 'Something went wrong.' });
+    log(requestId, 'ERROR', 'Failed to process OpenAI request', {
+      error: error.message,
+      stack: error.stack
+    });
+    
+    // Return a proper error response
+    res.status(500).json({
+      error: {
+        message: 'Failed to process OpenAI request',
+        type: 'proxy_error',
+        code: 'proxy_error',
+        details: error.message
+      }
+    });
   }
 });
 
+// Start server
 app.listen(PORT, () => {
-  console.log(`Proxy server listening on port ${PORT}`);
+  log('SYSTEM', 'INFO', `Proxy server running on port ${PORT}`, {
+    environment: process.env.NODE_ENV || 'development',
+    baseUrl: OPENAI_BASE_URL
+  });
 }); 
